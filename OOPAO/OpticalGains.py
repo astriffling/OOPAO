@@ -12,18 +12,27 @@ class OpticalGains:
     
     def __init__(self,
                  tel,
-                 dm,
-                 M2C,
-                 GSC):
+                 GSC,
+                 dm = None,
+                 M2C : np.array = None,
+                 basis : np.array = None,
+                 ):
         
         self.resolution  = GSC.resolution
         self.pupil_resolution = self.resolution // 2 - 2
         self.D           = tel.D
         self.obstruction = tel.centralObstruction
-        self.nAct        = int(dm.nActAlongDiameter+1)
-        self.coupling    = dm.mechCoupling 
-        self.M2C         = M2C
-        self.n_modes     = M2C.shape[1]
+        
+        if dm is not None:
+            self.nAct        = int(dm.nActAlongDiameter+1)
+            self.coupling    = dm.mechCoupling 
+            self.M2C         = M2C
+            self.n_modes     = M2C.shape[1]
+            self.basis_ready = False
+        else:
+            self.basis = basis
+            self.basis_ready = True
+            
         self.calibration_ready = False
         self.tag = 'OG'
         
@@ -31,7 +40,10 @@ class OpticalGains:
     def optical_gains_calibration(self,frame):    
         self.calib_frame = frame.copy()
         frame = frame/frame.sum()
-        self.compute_basis()
+        if self.basis_ready is False:
+            self.compute_basis()
+        else:
+            self.basis_ffts()
         self.compute_mask()
         
         self.IR_calib, self.fft_IR_calib = self.compute_IR(frame)
@@ -57,7 +69,6 @@ class OpticalGains:
             _, self.fft_IR_sky = self.compute_IR(frame)
             self.OG = np.real(np.sum(np.tile(self.fft_IR_sky[:,:,None], self.n_modes)  * self.num, axis=(0,1)) / self.den)
     
-    
     def compute_basis(self):
         Dpup    = self.pupil_resolution+1
         x       = np.linspace(-self.pupil_resolution/2,self.pupil_resolution/2,self.pupil_resolution)
@@ -76,7 +87,13 @@ class OpticalGains:
         self.basis = np.pad(modes, ((pad,pad),(pad,pad),(0,0)))
         self.fft_basis = np.asarray(fftn(self.basis)).T
         self.ifft_basis   = np.asarray(ifftn(self.basis)).T
-        
+    
+    def basis_ffts(self):
+        pad = (self.resolution - self.basis.shape[0]) // 2
+        self.basis = np.pad(self.basis, ((pad,pad),(pad,pad),(0,0)))
+        self.fft_basis = np.asarray(fftn(self.basis)).T
+        self.ifft_basis   = np.asarray(ifftn(self.basis)).T
+    
     def influence_function_grid(self):
         pitch = self.D / (self.nAct-1)#)+1)
         x = np.linspace(-self.D/2,self.D/2,self.nAct)
