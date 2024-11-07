@@ -31,6 +31,7 @@ class OpticalGains:
             self.basis_ready = False
         else:
             self.basis = basis
+            self.n_modes = basis.shape[-1]
             self.basis_ready = True
             
         self.calibration_ready = False
