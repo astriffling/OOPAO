@@ -4,8 +4,11 @@ Created on Sat Dec  3 13:22:10 2022
 
 @author: cheritier -- astriffl
 """
-import numpy as np
 
+import numpy as np
+from OOPAO.Zernike import Zernike
+from OOPAO.calibration.compute_KL_modal_basis import compute_KL_basis
+from OOPAO.tools.tools import OopaoError
 
 class NCPA:
 
@@ -28,11 +31,11 @@ class NCPA:
 
         ************************** OPTIONAL PARAMETERS **************************
 
-        _ modal_basis            : str, 'KL' (default), 'Zernike', or 'M2C' to import from an M2C matrix, as modal basis for NCPA generation
+        _ modal_basis            : str, 'KL' (default), 'Zernike'
         _ coefficients           : a list of coefficients of chosen modal basis. The coefficients are normalized to 1 m.
-        _ f2                     : a list of 3 elements [amplitude, start mode, end mode, cutoff_freq] which will follow 1/f2 law
+        _ f2                     : a list of 4 elements [amplitude, start mode, end mode, cutoff_freq] which will follow 1/f2 law
         _ seed                   : pseudo-random value to create the NCPA with repeatability
-        _ M2C                    : M2C matrix to compute modal basis if modal_basis is set to 'M2C'
+        _ M2C                    : M2C matrix to compute modal basis, override modal_basis entry
 
         ************************** MAIN PROPERTIES **************************
 
@@ -56,7 +59,7 @@ class NCPA:
         ncpa = NCPA(tel,dm,atm,coefficients = list_coefficients)                  --> NCPA based on KL modes
         ncpa = NCPA(tel,dm,atm,modal_basis='Zernike',coefficients = list_coefficients) --> NCPA based on Zernikes modes
 
-        4) Create an NCPA following an 1/f2 distribution law on modes amplitudes
+        4) Create an NCPA following an 1/f2 distribution law on KL modes amplitudes
         ncpa = NCPA(tel,dm,atm,f2=[200e-9,5,25,1])  --> 200 nm RMS NCPA as an 1/f2 law of modes 5 to 25 with a cutoff frequency of 1
         """
         self.basis = modal_basis
@@ -65,6 +68,8 @@ class NCPA:
         self.dm = dm
         self.seed = seed
         self.M2C = M2C
+        if self.M2C is not None:
+            self.basis = 'M2C'
 
         if f2 is None:
             if coefficients is None:
@@ -75,14 +80,17 @@ class NCPA:
                     if self.basis == 'KL':
                         self.B = self.KL_basis()[:, :, :len(coefficients)]
 
-                    if self.basis == 'Zernike':
+                    elif self.basis == 'Zernike':
                         n_max = len(coefficients)
                         self.B = self.Zernike_basis(n_max)
+                        
+                    elif self.basis == 'M2C':
+                        if self.M2C is not None:
+                            self.B = self.M2C_basis(self.M2C)
                 else:
-                    raise TypeError(
-                        'The zernike coefficients should be input as a list.')
-
-            self.OPD = np.matmul(self.B, np.asarray(coefficients))
+                    raise OopaoError(
+                        'The coefficients should be input as a list.')
+                self.OPD = np.matmul(self.B[:,:,:len(coefficients)], np.asarray(coefficients))
 
         else:
             self.NCPA_f2_law(f2)
@@ -92,38 +100,30 @@ class NCPA:
 
     def NCPA_f2_law(self, f2):
         if type(f2) is list and len(f2) == 4:
-            if self.basis == 'KL':
+            if self.basis == 'KL': 
                 self.B = self.KL_basis()
-                phase = np.sum([np.random.RandomState(i*self.seed).randn()/np.sqrt(
-                    i+f2[3])*self.B[:, :, i] for i in range(f2[1], f2[2])], axis=0)
-                self.OPD = phase / \
-                    np.std(phase[np.where(self.tel.pupil == 1)]) * f2[0]
-
-            if self.basis == 'Zernike':
+                
+            elif self.basis == 'Zernike':
                 self.B = self.Zernike_basis(f2[2])
-                self.OPD = np.sum([np.random.RandomState(i*self.seed).randn()/np.sqrt(
-                    i+f2[3])*self.B[:, :, i] for i in range(f2[1], f2[2])], axis=0)
-                self.OPD = self.OPD / \
-                    np.std(self.OPD[np.where(self.tel.pupil == 1)]) * f2[0]
-
-            if self.basis == 'M2C':
+            
+            elif self.basis == 'M2C':
                 if self.M2C is not None:
                     self.B = self.M2C_basis(self.M2C)
-                    self.coefs = ([np.random.RandomState(
-                        i*self.seed).randn()/np.sqrt(i+f2[3])*self.B[:, :, i] for i in range(f2[1], f2[2])])
-                    phase = np.sqrt(np.sum(np.array(self.coefs)**2, axis=0))
-                    self.OPD = phase / \
-                        np.std(phase[np.where(self.tel.pupil == 1)]) * f2[0]
-                else:
-                    raise TypeError(
-                        'M2C should not be None if modal_basis is set to \'M2C\'')
-
+            else:
+                raise OopaoError(f"Basis '{self.basis}' not supported")
+            self.OPD = self.f2_law(f2)
+            
         else:
-            raise TypeError(
+            raise OopaoError(
                 'f2 should be a list containing [amplitude, start_mode, end_mode, cutoff]')
 
+    def f2_law(self, f2):
+        phase = np.sum([np.random.RandomState(i*self.seed).randn()/np.sqrt(
+            i+f2[3])*self.B[:, :, i] for i in range(f2[1], f2[2])], axis=0)
+        OPD = phase / np.std(phase[np.where(self.tel.pupil == 1)]) * f2[0]
+        return OPD
+    
     def KL_basis(self):
-        from OOPAO.calibration.compute_KL_modal_basis import compute_KL_basis
         M2C_KL = compute_KL_basis(self.tel, self.atm, self.dm, lim=1e-2)
         self.dm.coefs = M2C_KL
         self.tel*self.dm
@@ -131,7 +131,6 @@ class NCPA:
         return B
 
     def Zernike_basis(self, n_max):
-        from OOPAO.Zernike import Zernike
         self.Z = Zernike(self.tel, J=n_max)
         self.Z.computeZernike(self.tel)
         B = self.Z.modesFullRes
